@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netpoint-sa
+  namespace: netpoint
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: netpoint-networkpolicy-reader
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: netpoint-networkpolicy-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: netpoint-sa
+    namespace: netpoint
+roleRef:
+  kind: ClusterRole
+  name: netpoint-networkpolicy-reader
+  apiGroup: rbac.authorization.k8s.io

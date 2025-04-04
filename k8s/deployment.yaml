@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netpoint-deployment
+  namespace: netpoint
+  labels:
+    app: netpoint
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netpoint
+  template:
+    metadata:
+      labels:
+        app: netpoint
+    spec:
+      serviceAccountName: netpoint-sa
+      containers:
+      - name: netpoint
+        image: quay.io/twistedsolutions/netpoint:latest
+        imagePullPolicy: Always
+        env:
+        - name: GITOPS_TRACKING_REQUIREMENT
+          value: annotation
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        ports:
+        - name: http
+          containerPort: 8080
