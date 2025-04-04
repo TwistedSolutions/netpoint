@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/google/uuid"
@@ -15,6 +16,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
+
+// Global variable for gitops tracking requirement, read from environment.
+var requiredTracking string
 
 // DataCenterFile represents the overall JSON structure.
 type DataCenterFile struct {
@@ -36,6 +40,7 @@ type DataCenterObject struct {
 var privateCIDRs []*net.IPNet
 
 func init() {
+	requiredTracking = os.Getenv("GITOPS_TRACKING_REQUIREMENT")
 	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -93,12 +98,40 @@ func lastIP(n *net.IPNet) net.IP {
 	return net.IP(lastIP)
 }
 
-// GetNetworkPolicyEgressCIDRs returns a JSON string formatted according to the selected view:
-// "all" (default): one aggregated object;
-// "policy": one object per NetworkPolicy;
-// "namespace": one object per namespace.
-// "internet": two objects—one for public CIDRs and one for private CIDRs.
-// "cidr": one object per CIDR provided via the 'providedCIDRs' parameter.
+// passesGitopsTracking returns true if the network policy meets the gitops tracking requirement.
+func passesGitopsTracking(np v1.NetworkPolicy) bool {
+	switch requiredTracking {
+	case "label":
+		if val, ok := np.Labels["app.kubernetes.io/instance"]; ok && val != "" {
+			return true
+		}
+		return false
+	case "annotation":
+		if val, ok := np.Annotations["argocd.argoproj.io/tracking-id"]; ok && val != "" {
+			return true
+		}
+		return false
+	case "label+annotation":
+		if val, ok := np.Labels["app.kubernetes.io/instance"]; ok && val != "" {
+			if val2, ok := np.Annotations["argocd.argoproj.io/tracking-id"]; ok && val2 != "" {
+				return true
+			}
+		}
+		return false
+	default:
+		// No filtering if the env variable is not set or is an unrecognized value.
+		return true
+	}
+}
+
+// GetNetworkPolicyEgressCIDRs returns a JSON string formatted per the selected view:
+// - "all" (default): one aggregated object of all unique CIDRs;
+// - "policy": one object per NetworkPolicy;
+// - "namespace": one object per namespace;
+// - "internet": two objects (public and private aggregated separately);
+// - "cidr": one object per user-provided CIDR, where each object's Ranges includes only those aggregated network policy CIDRs that are fully contained within the provided CIDR.
+// The filterNamespace and filterName parameters are optional; if empty, no filtering is applied for those fields.
+// Additionally, the function filters network policies based on the gitops tracking requirement.
 func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDRs string) (string, error) {
 	// Initialize k8s client using in-cluster configuration.
 	config, err := rest.InClusterConfig()
@@ -122,21 +155,19 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 		}
 	}
 
-	// If no filtering is provided, use all policies.
+	// Filter policies based on gitops tracking requirement and optional namespace/name filters.
 	var filteredPolicies []v1.NetworkPolicy
-	if filterNamespace == "" && filterName == "" {
-		filteredPolicies = networkPolicyList.Items
-	} else {
-		// Otherwise, filter policies based on namespace and/or name.
-		for _, np := range networkPolicyList.Items {
-			if filterNamespace != "" && np.Namespace != filterNamespace {
-				continue
-			}
-			if filterName != "" && np.Name != filterName {
-				continue
-			}
-			filteredPolicies = append(filteredPolicies, np)
+	for _, np := range networkPolicyList.Items {
+		if !passesGitopsTracking(np) {
+			continue
 		}
+		if filterNamespace != "" && np.Namespace != filterNamespace {
+			continue
+		}
+		if filterName != "" && np.Name != filterName {
+			continue
+		}
+		filteredPolicies = append(filteredPolicies, np)
 	}
 
 	var objects []DataCenterObject
