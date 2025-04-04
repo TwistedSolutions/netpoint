@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 
 	"github.com/google/uuid"
+	v1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -27,11 +29,47 @@ type DataCenterObject struct {
 	Ranges      []string `json:"ranges"`
 }
 
+// Pre-parse common private CIDR ranges according to RFC 1918.
+// These are used to filter out private IPs from the output.
+var privateCIDRs []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			// Log or handle error as needed.
+			continue
+		}
+		privateCIDRs = append(privateCIDRs, network)
+	}
+}
+
+// isPrivateCIDR returns true if the CIDR falls within any common private IP range.
+func isPrivateCIDR(cidr string) bool {
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		// If parsing fails, assume it's not private.
+		return false
+	}
+	for _, priv := range privateCIDRs {
+		if priv.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicCIDR returns true if the CIDR is not private.
+func isPublicCIDR(cidr string) bool {
+	return !isPrivateCIDR(cidr)
+}
+
 // GetNetworkPolicyEgressCIDRs returns a JSON string formatted according to the selected view:
 // "all" (default): one aggregated object;
 // "policy": one object per NetworkPolicy;
 // "namespace": one object per namespace.
-func GetNetworkPolicyEgressCIDRs(view string) (string, error) {
+// "internet": two objects—one for public CIDRs and one for private CIDRs.
+func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName string) (string, error) {
 	// Initialize k8s client using in-cluster configuration.
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -43,7 +81,7 @@ func GetNetworkPolicyEgressCIDRs(view string) (string, error) {
 	}
 
 	// List all NetworkPolicies in all namespaces.
-	networkPolicies, err := clientset.NetworkingV1().NetworkPolicies("").List(context.TODO(), metav1.ListOptions{})
+	networkPolicyList, err := clientset.NetworkingV1().NetworkPolicies("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", fmt.Errorf("network policies not found")
@@ -54,13 +92,30 @@ func GetNetworkPolicyEgressCIDRs(view string) (string, error) {
 		}
 	}
 
+	// If no filtering is provided, use all policies.
+	var filteredPolicies []v1.NetworkPolicy
+	if filterNamespace == "" && filterName == "" {
+		filteredPolicies = networkPolicyList.Items
+	} else {
+		// Otherwise, filter policies based on namespace and/or name.
+		for _, np := range networkPolicyList.Items {
+			if filterNamespace != "" && np.Namespace != filterNamespace {
+				continue
+			}
+			if filterName != "" && np.Name != filterName {
+				continue
+			}
+			filteredPolicies = append(filteredPolicies, np)
+		}
+	}
+
 	var objects []DataCenterObject
 
 	switch view {
 
 	case "policy":
 		// Create one DataCenterObject per NetworkPolicy.
-		for _, np := range networkPolicies.Items {
+		for _, np := range filteredPolicies {
 			// Collect unique CIDRs from egress rules.
 			cidrSet := make(map[string]struct{})
 			for _, egress := range np.Spec.Egress {
@@ -88,7 +143,7 @@ func GetNetworkPolicyEgressCIDRs(view string) (string, error) {
 	case "namespace":
 		// Group by namespace: aggregate CIDRs from all NetworkPolicies in each namespace.
 		nsMap := make(map[string]map[string]struct{})
-		for _, np := range networkPolicies.Items {
+		for _, np := range filteredPolicies {
 			if _, exists := nsMap[np.Namespace]; !exists {
 				nsMap[np.Namespace] = make(map[string]struct{})
 			}
@@ -115,10 +170,49 @@ func GetNetworkPolicyEgressCIDRs(view string) (string, error) {
 			objects = append(objects, object)
 		}
 
+	case "internet":
+		// Aggregate all CIDRs across all NetworkPolicies.
+		cidrSet := make(map[string]struct{})
+		for _, np := range filteredPolicies {
+			for _, egress := range np.Spec.Egress {
+				for _, peer := range egress.To {
+					if peer.IPBlock != nil {
+						cidrSet[peer.IPBlock.CIDR] = struct{}{}
+					}
+				}
+			}
+		}
+		// Separate into public and private lists.
+		publicCIDRs := make([]string, 0)
+		privateCIDRsList := make([]string, 0)
+		for cidr := range cidrSet {
+			if isPublicCIDR(cidr) {
+				publicCIDRs = append(publicCIDRs, cidr)
+			} else {
+				privateCIDRsList = append(privateCIDRsList, cidr)
+			}
+		}
+		// Create two DataCenterObjects: one for public and one for private.
+		publicObjectName := "Public Network Policies"
+		publicObject := DataCenterObject{
+			Name:        publicObjectName,
+			ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(publicObjectName)).String(),
+			Description: "Aggregated public network policies across all namespaces",
+			Ranges:      publicCIDRs,
+		}
+		privateObjectName := "Private Network Policies"
+		privateObject := DataCenterObject{
+			Name:        privateObjectName,
+			ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(privateObjectName)).String(),
+			Description: "Aggregated private network policies across all namespaces",
+			Ranges:      privateCIDRsList,
+		}
+		objects = append(objects, publicObject, privateObject)
+
 	default:
 		// Default "all" view: aggregate all unique CIDRs across all NetworkPolicies.
 		cidrSet := make(map[string]struct{})
-		for _, np := range networkPolicies.Items {
+		for _, np := range filteredPolicies {
 			for _, egress := range np.Spec.Egress {
 				for _, peer := range egress.To {
 					if peer.IPBlock != nil {

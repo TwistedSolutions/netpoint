@@ -21,7 +21,9 @@ func main() {
 	r.HandleFunc("/networkpolicies", func(w http.ResponseWriter, r *http.Request) {
 		// Read the "view" query parameter.
 		view := r.URL.Query().Get("view")
-		data, err := api.GetNetworkPolicyEgressCIDRs(view)
+		filterNamespace := r.URL.Query().Get("namespace")
+		filterName := r.URL.Query().Get("name")
+		data, err := api.GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName)
 		if err != nil {
 			logrus.Errorf("Failed to get network policies: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
