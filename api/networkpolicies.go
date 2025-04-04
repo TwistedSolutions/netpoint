@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
+	"strings"
 
 	"github.com/google/uuid"
 	v1 "k8s.io/api/networking/v1"
@@ -64,12 +66,51 @@ func isPublicCIDR(cidr string) bool {
 	return !isPrivateCIDR(cidr)
 }
 
+// cidrContained returns true if child is completely contained in parent.
+func cidrContained(child, parent *net.IPNet) bool {
+	// Check if parent's network contains child's network start.
+	if !parent.Contains(child.IP) {
+		return false
+	}
+	// Calculate the last IP in child's CIDR.
+	last := lastIP(child)
+	return parent.Contains(last)
+}
+
+// lastIP calculates the last IP address in the given IPNet.
+// (This implementation works for IPv4 addresses.)
+func lastIP(n *net.IPNet) net.IP {
+	ip := n.IP.To4()
+	if ip == nil {
+		return n.IP
+	}
+	// Convert IP and mask to big.Int values.
+	ipInt := big.NewInt(0).SetBytes(ip)
+	mask := net.IP(n.Mask).To4()
+	maskInt := big.NewInt(0).SetBytes(mask)
+
+	// Compute the inverted mask.
+	invMask := big.NewInt(0).Not(maskInt)
+	lastInt := big.NewInt(0).Or(ipInt, invMask)
+
+	// Convert back to net.IP.
+	lastIP := lastInt.Bytes()
+	// Make sure we have 4 bytes.
+	if len(lastIP) < 4 {
+		padded := make([]byte, 4)
+		copy(padded[4-len(lastIP):], lastIP)
+		lastIP = padded
+	}
+	return net.IP(lastIP)
+}
+
 // GetNetworkPolicyEgressCIDRs returns a JSON string formatted according to the selected view:
 // "all" (default): one aggregated object;
 // "policy": one object per NetworkPolicy;
 // "namespace": one object per namespace.
 // "internet": two objects—one for public CIDRs and one for private CIDRs.
-func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName string) (string, error) {
+// "cidr": one object per CIDR provided via the 'providedCIDRs' parameter.
+func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDRs string) (string, error) {
 	// Initialize k8s client using in-cluster configuration.
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -208,6 +249,56 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName string) (stri
 			Ranges:      privateCIDRsList,
 		}
 		objects = append(objects, publicObject, privateObject)
+
+	case "cidr":
+		// First, aggregate all unique CIDRs from the filtered policies.
+		aggregatedSet := make(map[string]struct{})
+		for _, np := range filteredPolicies {
+			for _, egress := range np.Spec.Egress {
+				for _, peer := range egress.To {
+					if peer.IPBlock != nil {
+						aggregatedSet[peer.IPBlock.CIDR] = struct{}{}
+					}
+				}
+			}
+		}
+		// Convert aggregatedSet to a slice.
+		aggregatedCIDRs := make([]string, 0, len(aggregatedSet))
+		for cidr := range aggregatedSet {
+			aggregatedCIDRs = append(aggregatedCIDRs, cidr)
+		}
+		// For each provided CIDR (comma-separated), create one object.
+		cidrList := strings.Split(providedCIDRs, ",")
+		for _, provided := range cidrList {
+			providedTrim := strings.TrimSpace(provided)
+			if providedTrim == "" {
+				continue
+			}
+			// Parse the provided CIDR.
+			_, providedNet, err := net.ParseCIDR(providedTrim)
+			if err != nil {
+				// Skip invalid provided CIDR.
+				continue
+			}
+			// For each aggregated CIDR, if it is fully contained within the provided CIDR, add it.
+			var contained []string
+			for _, agg := range aggregatedCIDRs {
+				_, aggNet, err := net.ParseCIDR(agg)
+				if err != nil {
+					continue
+				}
+				if cidrContained(aggNet, providedNet) {
+					contained = append(contained, agg)
+				}
+			}
+			object := DataCenterObject{
+				Name:        providedTrim,
+				ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(providedTrim)).String(),
+				Description: "Aggregated network policy CIDRs contained in the provided CIDR",
+				Ranges:      contained,
+			}
+			objects = append(objects, object)
+		}
 
 	default:
 		// Default "all" view: aggregate all unique CIDRs across all NetworkPolicies.
