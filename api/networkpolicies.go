@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net"
 	"strings"
 
@@ -77,30 +77,19 @@ func cidrContained(child, parent *net.IPNet) bool {
 	return parent.Contains(last)
 }
 
-// lastIP calculates the last IP address in the given IPNet.
-// (This implementation works for IPv4 addresses.)
+// lastIP calculates the last IPv4 address in the given IPNet.
 func lastIP(n *net.IPNet) net.IP {
 	ip := n.IP.To4()
 	if ip == nil {
+		// Fallback to original IP if not IPv4.
 		return n.IP
 	}
-	// Convert IP and mask to big.Int values.
-	ipInt := big.NewInt(0).SetBytes(ip)
-	mask := net.IP(n.Mask).To4()
-	maskInt := big.NewInt(0).SetBytes(mask)
-
-	// Compute the inverted mask.
-	invMask := big.NewInt(0).Not(maskInt)
-	lastInt := big.NewInt(0).Or(ipInt, invMask)
-
-	// Convert back to net.IP.
-	lastIP := lastInt.Bytes()
-	// Make sure we have 4 bytes.
-	if len(lastIP) < 4 {
-		padded := make([]byte, 4)
-		copy(padded[4-len(lastIP):], lastIP)
-		lastIP = padded
-	}
+	mask := n.Mask
+	ipInt := binary.BigEndian.Uint32(ip)
+	maskInt := binary.BigEndian.Uint32(mask)
+	lastInt := ipInt | ^maskInt
+	lastIP := make([]byte, 4)
+	binary.BigEndian.PutUint32(lastIP, lastInt)
 	return net.IP(lastIP)
 }
 
