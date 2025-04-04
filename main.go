@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -37,9 +41,36 @@ func main() {
 
 	r.Use(middleware.LoggingMiddleware)
 
-	logrus.Info("Starting server on :8080")
-	if err := http.ListenAndServe(":8080", r); err != nil {
-		logrus.Fatalf("Server failed to start: %v", err)
+	// Create an HTTP server.
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: r,
 	}
+
+	// Channel to listen for interrupt or terminate signals.
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the server in a separate goroutine.
+	go func() {
+		logrus.Info("Starting server on :8080")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logrus.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Block until we receive a signal.
+	<-stopChan
+	logrus.Info("Shutdown signal received, shutting down gracefully...")
+
+	// Create a deadline to wait for.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Attempt a graceful shutdown.
+	if err := server.Shutdown(ctx); err != nil {
+		logrus.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	logrus.Info("Server exiting")
 
 }
