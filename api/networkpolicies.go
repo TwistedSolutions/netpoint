@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -124,6 +126,20 @@ func passesGitopsTracking(np v1.NetworkPolicy) bool {
 	}
 }
 
+// Custom type to sort CIDRs by their IP address.
+type cidrSlice []string
+
+func (c cidrSlice) Len() int      { return len(c) }
+func (c cidrSlice) Swap(i, j int) { c[i], c[j] = c[j], c[i] }
+func (c cidrSlice) Less(i, j int) bool {
+	_, ipnet1, err1 := net.ParseCIDR(c[i])
+	_, ipnet2, err2 := net.ParseCIDR(c[j])
+	if err1 != nil || err2 != nil {
+		return c[i] < c[j]
+	}
+	return bytes.Compare(ipnet1.IP, ipnet2.IP) < 0
+}
+
 // GetNetworkPolicyEgressCIDRs returns a JSON string formatted per the selected view:
 // - "all" (default): one aggregated object of all unique CIDRs;
 // - "policy": one object per NetworkPolicy;
@@ -190,6 +206,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 			for cidr := range cidrSet {
 				cidrs = append(cidrs, cidr)
 			}
+			sort.Sort(cidrSlice(cidrs))
 			// Use a composite name (namespace/policy) for uniqueness.
 			objectName := fmt.Sprintf("%s/%s", np.Namespace, np.Name)
 			object := DataCenterObject{
@@ -222,6 +239,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 			for cidr := range cidrSet {
 				cidrs = append(cidrs, cidr)
 			}
+			sort.Sort(cidrSlice(cidrs))
 			object := DataCenterObject{
 				Name:        ns,
 				ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(ns)).String(),
@@ -253,6 +271,8 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 				privateCIDRsList = append(privateCIDRsList, cidr)
 			}
 		}
+		sort.Sort(cidrSlice(publicCIDRs))
+		sort.Sort(cidrSlice(privateCIDRsList))
 		// Create two DataCenterObjects: one for public and one for private.
 		publicObjectName := "Public Network Policies"
 		publicObject := DataCenterObject{
@@ -287,6 +307,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 		for cidr := range aggregatedSet {
 			aggregatedCIDRs = append(aggregatedCIDRs, cidr)
 		}
+		sort.Sort(cidrSlice(aggregatedCIDRs))
 		// For each provided CIDR (comma-separated), create one object.
 		cidrList := strings.Split(providedCIDRs, ",")
 		for _, provided := range cidrList {
@@ -311,6 +332,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 					contained = append(contained, agg)
 				}
 			}
+			sort.Sort(cidrSlice(contained))
 			object := DataCenterObject{
 				Name:        providedTrim,
 				ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(providedTrim)).String(),
@@ -337,6 +359,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 			cidrs = append(cidrs, cidr)
 		}
 		objectName := "All Network Policies"
+		sort.Sort(cidrSlice(cidrs))
 		object := DataCenterObject{
 			Name:        objectName,
 			ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(objectName)).String(),
