@@ -29,6 +29,7 @@ func main() {
 
 	// Configure logrus to output JSON logs.
 	logrus.SetFormatter(&logrus.JSONFormatter{
+		DisableHTMLEscape: true,
 		FieldMap: logrus.FieldMap{
 			logrus.FieldKeyMsg:   "message",
 			logrus.FieldKeyLevel: "log.level",
