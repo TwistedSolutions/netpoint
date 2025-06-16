@@ -14,10 +14,28 @@ import (
 	"twistedsolutions.se/netpoint/middleware"
 )
 
+type ecsVersionHook struct{}
+
+func (h *ecsVersionHook) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
+
+func (h *ecsVersionHook) Fire(entry *logrus.Entry) error {
+	entry.Data["ecs.version"] = "9.0.0"
+	return nil
+}
+
 func main() {
 
 	// Configure logrus to output JSON logs.
-	logrus.SetFormatter(&logrus.JSONFormatter{})
+	logrus.SetFormatter(&logrus.JSONFormatter{
+		FieldMap: logrus.FieldMap{
+			logrus.FieldKeyMsg:   "message",
+			logrus.FieldKeyLevel: "log.level",
+			logrus.FieldKeyTime:  "@timestamp",
+		},
+	})
+	logrus.AddHook(&ecsVersionHook{})
 	logrus.SetOutput(os.Stdout)
 	logrus.SetLevel(logrus.InfoLevel)
 
