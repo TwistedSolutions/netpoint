@@ -261,19 +261,15 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 				}
 			}
 		}
-		// Separate into public and private lists.
+		// Collect public CIDRs only.
 		publicCIDRs := make([]string, 0)
-		privateCIDRsList := make([]string, 0)
 		for cidr := range cidrSet {
 			if isPublicCIDR(cidr) {
 				publicCIDRs = append(publicCIDRs, cidr)
-			} else {
-				privateCIDRsList = append(privateCIDRsList, cidr)
 			}
 		}
 		sort.Sort(cidrSlice(publicCIDRs))
-		sort.Sort(cidrSlice(privateCIDRsList))
-		// Create two DataCenterObjects: one for public and one for private.
+		// Create a DataCenterObject for public IPs only.
 		publicObjectName := "Public Network Policies"
 		publicObject := DataCenterObject{
 			Name:        publicObjectName,
@@ -281,14 +277,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 			Description: "Aggregated public network policies across all namespaces",
 			Ranges:      publicCIDRs,
 		}
-		privateObjectName := "Private Network Policies"
-		privateObject := DataCenterObject{
-			Name:        privateObjectName,
-			ID:          uuid.NewSHA1(uuid.NameSpaceDNS, []byte(privateObjectName)).String(),
-			Description: "Aggregated private network policies across all namespaces",
-			Ranges:      privateCIDRsList,
-		}
-		objects = append(objects, publicObject, privateObject)
+		objects = append(objects, publicObject)
 
 	case "cidr":
 		// First, aggregate all unique CIDRs from the filtered policies.
