@@ -8,6 +8,7 @@ NetPoint is a Kubernetes network policy exporter built to transform NetworkPolic
   Exports NetworkPolicies in a DataCenterObject JSON format that can be directly imported into Checkpoint firewall environments.
 
 - **Multiple Views:**  
+  All views exclude the match-all ranges `0.0.0.0/0` and `::/0`.  
   - **all:** Aggregates all unique CIDRs across all NetworkPolicies into a single object.  
   - **policy:** Returns one DataCenterObject per individual NetworkPolicy.  
   - **namespace:** Groups NetworkPolicies by namespace, aggregating CIDRs per namespace.  

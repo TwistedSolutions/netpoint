@@ -73,6 +73,27 @@ func isPublicCIDR(cidr string) bool {
 	return !isPrivateCIDR(cidr)
 }
 
+// isAnyCIDR returns true for the match-all ranges 0.0.0.0/0 and ::/0.
+func isAnyCIDR(cidr string) bool {
+	ip, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil {
+		return false
+	}
+	ones, _ := network.Mask.Size()
+	return ones == 0 && ip.IsUnspecified()
+}
+
+// addEgressCIDRs adds the egress IPBlock CIDRs of the policy to set, skipping match-all ranges.
+func addEgressCIDRs(set map[string]struct{}, np v1.NetworkPolicy) {
+	for _, egress := range np.Spec.Egress {
+		for _, peer := range egress.To {
+			if peer.IPBlock != nil && !isAnyCIDR(peer.IPBlock.CIDR) {
+				set[peer.IPBlock.CIDR] = struct{}{}
+			}
+		}
+	}
+}
+
 // cidrContained returns true if child is completely contained in parent.
 func cidrContained(child, parent *net.IPNet) bool {
 	// Check if parent's network contains child's network start.
@@ -195,13 +216,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 		for _, np := range filteredPolicies {
 			// Collect unique CIDRs from egress rules.
 			cidrSet := make(map[string]struct{})
-			for _, egress := range np.Spec.Egress {
-				for _, peer := range egress.To {
-					if peer.IPBlock != nil {
-						cidrSet[peer.IPBlock.CIDR] = struct{}{}
-					}
-				}
-			}
+			addEgressCIDRs(cidrSet, np)
 			cidrs := make([]string, 0, len(cidrSet))
 			for cidr := range cidrSet {
 				cidrs = append(cidrs, cidr)
@@ -225,13 +240,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 			if _, exists := nsMap[np.Namespace]; !exists {
 				nsMap[np.Namespace] = make(map[string]struct{})
 			}
-			for _, egress := range np.Spec.Egress {
-				for _, peer := range egress.To {
-					if peer.IPBlock != nil {
-						nsMap[np.Namespace][peer.IPBlock.CIDR] = struct{}{}
-					}
-				}
-			}
+			addEgressCIDRs(nsMap[np.Namespace], np)
 		}
 		// Create one DataCenterObject per namespace.
 		for ns, cidrSet := range nsMap {
@@ -253,13 +262,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 		// Aggregate all CIDRs across all NetworkPolicies.
 		cidrSet := make(map[string]struct{})
 		for _, np := range filteredPolicies {
-			for _, egress := range np.Spec.Egress {
-				for _, peer := range egress.To {
-					if peer.IPBlock != nil {
-						cidrSet[peer.IPBlock.CIDR] = struct{}{}
-					}
-				}
-			}
+			addEgressCIDRs(cidrSet, np)
 		}
 		// Collect public CIDRs only.
 		publicCIDRs := make([]string, 0)
@@ -283,13 +286,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 		// First, aggregate all unique CIDRs from the filtered policies.
 		aggregatedSet := make(map[string]struct{})
 		for _, np := range filteredPolicies {
-			for _, egress := range np.Spec.Egress {
-				for _, peer := range egress.To {
-					if peer.IPBlock != nil {
-						aggregatedSet[peer.IPBlock.CIDR] = struct{}{}
-					}
-				}
-			}
+			addEgressCIDRs(aggregatedSet, np)
 		}
 		// Convert aggregatedSet to a slice.
 		aggregatedCIDRs := make([]string, 0, len(aggregatedSet))
@@ -335,13 +332,7 @@ func GetNetworkPolicyEgressCIDRs(view, filterNamespace, filterName, providedCIDR
 		// Default "all" view: aggregate all unique CIDRs across all NetworkPolicies.
 		cidrSet := make(map[string]struct{})
 		for _, np := range filteredPolicies {
-			for _, egress := range np.Spec.Egress {
-				for _, peer := range egress.To {
-					if peer.IPBlock != nil {
-						cidrSet[peer.IPBlock.CIDR] = struct{}{}
-					}
-				}
-			}
+			addEgressCIDRs(cidrSet, np)
 		}
 		cidrs := make([]string, 0, len(cidrSet))
 		for cidr := range cidrSet {
